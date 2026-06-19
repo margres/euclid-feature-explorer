@@ -18,27 +18,42 @@
   #panel .meta { font-size: 12px; margin-top: 6px; color: #222; word-break: break-all; }
   #flagRow { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
   #flagBtn { cursor: pointer; }
-  #flagBtn.on { background: #ffd23f; border-color: #e0a800; }
+  #flagBtn.on { background: #1fff4f; border-color: #14b838; }
   #note { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 12px; min-height: 38px; }
   #merBox { margin-top: 8px; font-size: 11px; }
   #merBox .row { display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 1px 0; }
   #merBox .row span:first-child { color: #666; }
   #nnControls { margin-top: 10px; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #nnN { width: 52px; }
-  #nnList { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 8px; }
-  #nnList canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border: 2px solid transparent;
-                   border-radius: 3px; background: #111; cursor: pointer; }
   #nnMsg { font-size: 11px; color: #666; margin-top: 4px; }
   #controls { position: fixed; top: 12px; left: 12px; background: rgba(255,255,255,0.97);
               border: 1px solid #ccc; border-radius: 8px; padding: 10px 12px; z-index: 9; font-size: 13px; width: 234px; }
   #legend div { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
-  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #fff; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #888; }
+  .ring { width: 12px; height: 12px; border-radius: 50%; display: inline-block; box-sizing: border-box; border: 3px solid; background: transparent; }
   #controls label, #controls button, #controls input { font-size: 13px; }
   #controls .ctl { margin-top: 6px; }
   #bgOpacity { width: 100%; }
   #searchRow { margin-top: 8px; display: flex; gap: 4px; }
   #searchBox { flex: 1; min-width: 0; }
   #searchMsg { font-size: 11px; color: #a00; min-height: 14px; }
+  /* modal */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 20; display: none; }
+  #modalCard { position: absolute; top: 4%; left: 50%; transform: translateX(-50%); width: min(900px, 92vw);
+               max-height: 90vh; overflow-y: auto; background: #fff; border-radius: 10px; padding: 14px 18px;
+               box-shadow: 0 6px 30px rgba(0,0,0,0.3); }
+  #modalHead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  #modalTitle { font-size: 16px; font-weight: 600; }
+  #modalClose { cursor: pointer; font-size: 18px; border: none; background: none; }
+  #modalBody { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 8px; }
+  .card canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border: 3px solid transparent;
+                 border-radius: 4px; background: #111; cursor: pointer; }
+  .card .cid { font-size: 10px; color: #444; word-break: break-all; margin-top: 4px; }
+  .card .crow { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .card .fbtn { cursor: pointer; font-size: 12px; }
+  .card .fbtn.on { background: #1fff4f; border-color: #14b838; }
+  .card textarea { width: 100%; box-sizing: border-box; font-size: 11px; min-height: 30px; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -49,7 +64,7 @@
     <div class="ctl"><label><input type="checkbox" id="hideBg" /> Hide background</label></div>
     <div class="ctl"><label><input type="checkbox" id="showAbc" checked /> Show A/B/C markers</label></div>
     <div class="ctl">Background opacity
-      <input type="range" id="bgOpacity" min="0.03" max="1" step="0.01" value="0.35" />
+      <input type="range" id="bgOpacity" min="0.03" max="1" step="0.01" value="0.45" />
     </div>
     <div id="searchRow">
       <input id="searchBox" placeholder="object id or id_str" />
@@ -57,8 +72,11 @@
     </div>
     <div id="searchMsg"></div>
     <div class="ctl">
+      <button id="flaggedBtn">★ Flagged (0)</button>
+    </div>
+    <div class="ctl">
       <button id="resetView">Reset view</button>
-      <button id="exportBtn" title="Download flagged objects + notes">Export flags</button>
+      <button id="exportBtn" title="Download flagged objects + notes as CSV">Export</button>
     </div>
   </div>
   <div id="panel">
@@ -68,16 +86,23 @@
     <div class="meta"><b>UMAP:</b> <span id="panelXY"></span></div>
     <div id="flagRow">
       <button id="flagBtn">⚑ Flag</button>
-      <span id="flagCount" style="font-size:11px;color:#666"></span>
     </div>
     <textarea id="note" placeholder="notes about this object…"></textarea>
     <div id="merBox"></div>
     <div id="nnControls">
-      <label>N: <input type="number" id="nnN" min="1" max="50" value="10" /></label>
+      <label>N: <input type="number" id="nnN" min="1" max="20" value="10" /></label>
       <button id="nnBtn">Show neighbors</button>
     </div>
     <div id="nnMsg"></div>
-    <div id="nnList"></div>
+  </div>
+  <div id="modal">
+    <div id="modalCard">
+      <div id="modalHead">
+        <span id="modalTitle"></span>
+        <button id="modalClose">✕</button>
+      </div>
+      <div id="modalBody"></div>
+    </div>
   </div>
   <script src="data.js"></script>
   <script src="ids.js"></script>
