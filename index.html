@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Euclid Feature-Space Explorer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #ffffff; font-family: system-ui, sans-serif; overflow: hidden; }
+  #gl { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #gl.dragging { cursor: grabbing; }
+  #tooltip { position: fixed; pointer-events: none; background: rgba(0,0,0,0.8); color: #fff;
+             padding: 4px 8px; border-radius: 4px; font-size: 12px; display: none; z-index: 10; }
+  #panel { position: fixed; top: 12px; right: 12px; width: 270px; max-height: calc(100vh - 24px);
+           overflow-y: auto; background: rgba(255,255,255,0.97); border: 1px solid #ccc; border-radius: 8px;
+           padding: 12px; z-index: 9; display: none; box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
+  #panelCanvas { width: 246px; height: 246px; image-rendering: pixelated; border-radius: 4px;
+                 border: 4px solid transparent; box-sizing: border-box; background: #111; }
+  #panel .meta { font-size: 12px; margin-top: 6px; color: #222; word-break: break-all; }
+  #flagRow { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+  #flagBtn { cursor: pointer; }
+  #flagBtn.on { background: #ffd23f; border-color: #e0a800; }
+  #note { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 12px; min-height: 38px; }
+  #merBox { margin-top: 8px; font-size: 11px; }
+  #merBox .row { display: flex; justify-content: space-between; border-bottom: 1px solid #eee; padding: 1px 0; }
+  #merBox .row span:first-child { color: #666; }
+  #nnControls { margin-top: 10px; font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #nnN { width: 52px; }
+  #nnList { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 8px; }
+  #nnList canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border: 2px solid transparent;
+                   border-radius: 3px; background: #111; cursor: pointer; }
+  #nnMsg { font-size: 11px; color: #666; margin-top: 4px; }
+  #controls { position: fixed; top: 12px; left: 12px; background: rgba(255,255,255,0.97);
+              border: 1px solid #ccc; border-radius: 8px; padding: 10px 12px; z-index: 9; font-size: 13px; width: 234px; }
+  #legend div { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #fff; }
+  #controls label, #controls button, #controls input { font-size: 13px; }
+  #controls .ctl { margin-top: 6px; }
+  #bgOpacity { width: 100%; }
+  #searchRow { margin-top: 8px; display: flex; gap: 4px; }
+  #searchBox { flex: 1; min-width: 0; }
+  #searchMsg { font-size: 11px; color: #a00; min-height: 14px; }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="tooltip"></div>
+  <div id="controls">
+    <div id="legend"></div>
+    <div class="ctl"><label><input type="checkbox" id="hideBg" /> Hide background</label></div>
+    <div class="ctl"><label><input type="checkbox" id="showAbc" checked /> Show A/B/C markers</label></div>
+    <div class="ctl">Background opacity
+      <input type="range" id="bgOpacity" min="0.03" max="1" step="0.01" value="0.35" />
+    </div>
+    <div id="searchRow">
+      <input id="searchBox" placeholder="object id or id_str" />
+      <button id="searchBtn">Find</button>
+    </div>
+    <div id="searchMsg"></div>
+    <div class="ctl">
+      <button id="resetView">Reset view</button>
+      <button id="exportBtn" title="Download flagged objects + notes">Export flags</button>
+    </div>
+  </div>
+  <div id="panel">
+    <canvas id="panelCanvas" width="246" height="246"></canvas>
+    <div class="meta"><b>ID:</b> <span id="panelId"></span></div>
+    <div class="meta"><b>Grade:</b> <span id="panelGrade"></span></div>
+    <div class="meta"><b>UMAP:</b> <span id="panelXY"></span></div>
+    <div id="flagRow">
+      <button id="flagBtn">⚑ Flag</button>
+      <span id="flagCount" style="font-size:11px;color:#666"></span>
+    </div>
+    <textarea id="note" placeholder="notes about this object…"></textarea>
+    <div id="merBox"></div>
+    <div id="nnControls">
+      <label>N: <input type="number" id="nnN" min="1" max="50" value="10" /></label>
+      <button id="nnBtn">Show neighbors</button>
+    </div>
+    <div id="nnMsg"></div>
+    <div id="nnList"></div>
+  </div>
+  <script src="data.js"></script>
+  <script src="ids.js"></script>
+  <script src="manifest.js"></script>
+  <script src="mer.js" onerror="window.MER_FIELDS=undefined"></script>
+  <script src="app.js"></script>
+</body>
+</html>

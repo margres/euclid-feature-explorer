@@ -1,0 +1,1 @@
+const MANIFEST = {"n": 1086667, "thumb": 64, "sheet": 4096, "perRow": 64, "perSheet": 4096, "sheets": 266, "band": "sw_mtf_vis_y_j", "nnK": 20, "grades": {"0": "Background", "1": "C", "2": "B", "3": "A"}};
