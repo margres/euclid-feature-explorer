@@ -65,6 +65,7 @@
     attribute vec2 aPos; attribute float aGrade;
     uniform vec2 uCenter; uniform float uScale; uniform vec2 uHalf;
     uniform float uPass; uniform float uZoom;
+    uniform float uShowA; uniform float uShowB; uniform float uShowC;
     varying float vGrade;
     void main() {
       vGrade = aGrade;
@@ -73,6 +74,10 @@
       float graded = step(0.5, aGrade);
       if (uPass < 0.5 && graded > 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }
       if (uPass > 0.5 && graded < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }
+      if (uPass > 0.5 && graded > 0.5) {       // per-grade visibility
+        float vis = aGrade > 2.5 ? uShowA : (aGrade > 1.5 ? uShowB : uShowC);
+        if (vis < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }
+      }
       float f = clamp(sqrt(uZoom), 1.0, 6.0);     // grow points as you zoom in
       float sz;
       if (aGrade > 2.5) sz = 10.0 * min(f, 2.2);
@@ -111,6 +116,9 @@
   const uPass = gl.getUniformLocation(prog, "uPass");
   const uBgAlpha = gl.getUniformLocation(prog, "uBgAlpha");
   const uZoom = gl.getUniformLocation(prog, "uZoom");
+  const uShowA = gl.getUniformLocation(prog, "uShowA");
+  const uShowB = gl.getUniformLocation(prog, "uShowB");
+  const uShowC = gl.getUniformLocation(prog, "uShowC");
 
   // ---- overlay markers (0 neighbor magenta, 1 query cyan, 2 flagged green) ----
   const OVS = `
@@ -158,7 +166,10 @@
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.clearColor(1, 1, 1, 1);
 
-  let hideBg = false, hideGraded = false, bgAlpha = 0.45;
+  let hideBg = false, bgAlpha = 0.45;
+  const showGrade = { 1: true, 2: true, 3: true };   // C, B, A
+  function gradeVisible(code) { return code === 0 ? !hideBg : showGrade[code]; }
+  function anyGraded() { return showGrade[1] || showGrade[2] || showGrade[3]; }
   function drawOverlay(b, count) {
     if (count <= 0) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, b);
@@ -177,8 +188,11 @@
     gl.uniform2f(uHalf, canvas.width / 2, canvas.height / 2);
     gl.uniform1f(uBgAlpha, bgAlpha);
     gl.uniform1f(uZoom, view.scale / fitScale);
+    gl.uniform1f(uShowA, showGrade[3] ? 1.0 : 0.0);
+    gl.uniform1f(uShowB, showGrade[2] ? 1.0 : 0.0);
+    gl.uniform1f(uShowC, showGrade[1] ? 1.0 : 0.0);
     if (!hideBg) { gl.uniform1f(uPass, 0.0); gl.drawArrays(gl.POINTS, 0, N); }
-    if (!hideGraded) { gl.uniform1f(uPass, 1.0); gl.drawArrays(gl.POINTS, 0, N); }
+    if (anyGraded()) { gl.uniform1f(uPass, 1.0); gl.drawArrays(gl.POINTS, 0, N); }
     gl.useProgram(ovProg);
     gl.uniform2f(ovCenter, view.cx, view.cy);
     gl.uniform1f(ovScale, view.scale);
@@ -216,8 +230,9 @@
   function pick(sx, sy) {
     let best = -1, bestD = Infinity;
     const GRADED_R = 14, BG_R = 8;
-    if (!hideGraded) {
+    if (anyGraded()) {
       for (const i of gradedIdx) {
+        if (!showGrade[GRD[i]]) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -230,7 +245,7 @@
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
       const arr = cells.get(cellKey(ccx + dx, ccy + dy)); if (!arr) continue;
       for (const i of arr) {
-        if (hideBg && GRD[i] === 0) continue;
+        if (!gradeVisible(GRD[i])) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -498,7 +513,9 @@
   }, { passive: false });
 
   document.getElementById("hideBg").addEventListener("change", (e) => { hideBg = e.target.checked; draw(); });
-  document.getElementById("showAbc").addEventListener("change", (e) => { hideGraded = !e.target.checked; draw(); });
+  document.getElementById("showA").addEventListener("change", (e) => { showGrade[3] = e.target.checked; draw(); });
+  document.getElementById("showB").addEventListener("change", (e) => { showGrade[2] = e.target.checked; draw(); });
+  document.getElementById("showC").addEventListener("change", (e) => { showGrade[1] = e.target.checked; draw(); });
   document.getElementById("bgOpacity").addEventListener("input", (e) => { bgAlpha = parseFloat(e.target.value); draw(); });
   document.getElementById("resetView").addEventListener("click", () => { fitView(); nbrCount = 0; draw(); });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
