@@ -401,28 +401,65 @@
     modal.style.display = "block";
   }
 
-  // ---- nearest neighbors ----
-  async function fetchNeighbors(i) {
-    if (!NN_K) throw new Error("no nn");
-    const start = i * NN_K * 4, want = NN_K * 4;
-    const resp = await fetch("nn.bin", { headers: { Range: `bytes=${start}-${start + want - 1}` } });
-    const ab = await resp.arrayBuffer();
-    let u; if (ab.byteLength === want) u = new Uint32Array(ab); else u = new Uint32Array(ab.slice(start, start + want));
-    return Array.from(u).filter((v) => v >= 0 && v < N);
+  // ---- nearest neighbors: computed live from quantized (int8) features ----
+  const FEAT_OK = (typeof FEAT_META !== "undefined") && FEAT_META;
+  const NN_MAX = 500;                  // UI cap so the popup doesn't render endless cards
+  let FEAT = null, featLoading = null;
+  async function ensureFeats() {
+    if (FEAT) return;
+    if (featLoading) return featLoading;
+    featLoading = (async () => {
+      const { dims, n, chunks } = FEAT_META;
+      const buf = new Int8Array(n * dims);
+      let off = 0;
+      for (let c = 0; c < chunks; c++) {
+        nnMsg.textContent = `loading features… (${c + 1}/${chunks})`;
+        const resp = await fetch("feat_" + c + ".bin");
+        const ab = await resp.arrayBuffer();
+        buf.set(new Int8Array(ab), off);
+        off += ab.byteLength;
+      }
+      FEAT = buf;
+    })();
+    return featLoading;
+  }
+  function computeNN(i, topN) {
+    const D = FEAT_META.dims, n = FEAT_META.n, qi = i * D;
+    const q = new Int32Array(D);
+    for (let d = 0; d < D; d++) q[d] = FEAT[qi + d];
+    const best = [];                   // ascending by sim, length <= topN
+    let worst = -Infinity;
+    for (let r = 0; r < n; r++) {
+      if (r === i) continue;
+      let s = 0; const ro = r * D;
+      for (let d = 0; d < D; d++) s += q[d] * FEAT[ro + d];
+      if (best.length < topN || s > worst) {
+        let lo = 0, hi = best.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (best[m].s < s) lo = m + 1; else hi = m; }
+        best.splice(lo, 0, { s: s, r: r });
+        if (best.length > topN) best.shift();
+        worst = best[0].s;
+      }
+    }
+    return best.reverse().map((b) => b.r);   // descending similarity
   }
   async function showNeighbors(i, nWanted) {
-    nnMsg.textContent = "loading neighbors…";
+    if (!FEAT_OK) { nnMsg.textContent = "neighbor features not available on this build."; return; }
+    nnMsg.textContent = "loading features…";
     try {
-      const nbr = (await fetchNeighbors(i)).slice(0, nWanted);
+      await ensureFeats();
+      nnMsg.textContent = "computing neighbors…";
+      await new Promise((r) => setTimeout(r, 15));   // let the message paint
+      const nbr = computeNN(i, nWanted);
       setNbrOverlay(i, nbr);
       nnMsg.textContent = nbr.length + " neighbors (magenta on map) — opened in popup";
-      openModal(nWanted + " nearest neighbors of " + IDLIST[i], nbr);
-    } catch (e) { nnMsg.textContent = "Neighbors need the hosted site (network)."; }
+      openModal(nbr.length + " nearest neighbors of " + IDLIST[i], nbr);
+    } catch (e) { nnMsg.textContent = "Neighbor compute failed (needs the hosted site)."; }
   }
   document.getElementById("nnBtn").addEventListener("click", () => {
     if (sel < 0) return;
     let n = parseInt(document.getElementById("nnN").value, 10) || 10;
-    n = Math.max(1, Math.min(NN_K || n, n));
+    n = Math.max(1, Math.min(NN_MAX, n));
     showNeighbors(sel, n);
   });
 
@@ -537,7 +574,7 @@
   })();
 
   // ---- go ----
-  if (NN_K) document.getElementById("nnN").max = String(NN_K);
+  document.getElementById("nnN").max = String(NN_MAX);
   refreshFlaggedBtn();
   resize(); fitView(); updateFlaggedOverlay(); draw();
 })();
