@@ -10,10 +10,10 @@
   #gl.dragging { cursor: grabbing; }
   #tooltip { position: fixed; pointer-events: none; background: rgba(0,0,0,0.8); color: #fff;
              padding: 4px 8px; border-radius: 4px; font-size: 12px; display: none; z-index: 10; }
-  #panel { position: fixed; top: 12px; right: 12px; width: 270px; max-height: calc(100vh - 24px);
+  #panel { position: fixed; top: 12px; right: 12px; width: 224px; max-height: calc(100vh - 24px);
            overflow-y: auto; background: rgba(255,255,255,0.97); border: 1px solid #ccc; border-radius: 8px;
            padding: 12px; z-index: 9; display: none; box-shadow: 0 2px 12px rgba(0,0,0,0.12); }
-  #panelCanvas { width: 246px; height: 246px; image-rendering: pixelated; border-radius: 4px;
+  #panelCanvas { width: 200px; height: 200px; image-rendering: auto; border-radius: 4px;
                  border: 4px solid transparent; box-sizing: border-box; background: #111; }
   #panel .meta { font-size: 12px; margin-top: 6px; color: #222; word-break: break-all; }
   #flagRow { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
@@ -67,6 +67,9 @@
       <label><input type="checkbox" id="showB" checked /> B</label>
       <label><input type="checkbox" id="showC" checked /> C</label>
     </div>
+    <div class="ctl" id="refRow">Reference paper:
+      <select id="refSel"><option value="">All papers</option></select>
+    </div>
     <div class="ctl">Background opacity
       <input type="range" id="bgOpacity" min="0.03" max="1" step="0.01" value="0.45" />
     </div>
@@ -84,7 +87,7 @@
     </div>
   </div>
   <div id="panel">
-    <canvas id="panelCanvas" width="246" height="246"></canvas>
+    <canvas id="panelCanvas" width="200" height="200"></canvas>
     <div class="meta"><b>ID:</b> <span id="panelId"></span></div>
     <div class="meta"><b>Grade:</b> <span id="panelGrade"></span></div>
     <div class="meta"><b>UMAP:</b> <span id="panelXY"></span></div>
@@ -113,6 +116,7 @@
   <script src="manifest.js"></script>
   <script src="mer.js" onerror="window.MER_FIELDS=undefined"></script>
   <script src="feats.js" onerror="window.FEAT_META=undefined"></script>
+  <script src="refs.js" onerror="window.REF_MAP=undefined"></script>
   <script src="app.js"></script>
 </body>
 </html>

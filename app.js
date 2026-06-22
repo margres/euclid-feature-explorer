@@ -153,6 +153,24 @@
   const nbrBuf = gl.createBuffer(); let nbrCount = 0;
   const flagBuf = gl.createBuffer(); let flagCount = 0;
 
+  // ---- reference-paper filter (graded objects only; data from refs.js) ----
+  const REF_OK = (typeof REF_MAP !== "undefined") && REF_MAP;
+  let selectedRef = "";                 // "" = all papers
+  const refBuf = gl.createBuffer(); let refCount = 0;   // matching graded points [x,y,grade]
+  function refPass(i) {
+    if (!selectedRef) return true;
+    const r = REF_OK ? REF_MAP[IDLIST[i]] : null;       // "Walmsley+25|Rojas+25"
+    return !!r && ("|" + r + "|").indexOf("|" + selectedRef + "|") >= 0;
+  }
+  function rebuildRefFilter() {
+    if (!selectedRef) { refCount = 0; return; }
+    const pts = [];
+    for (const i of gradedIdx) if (refPass(i)) pts.push(POS[2 * i], POS[2 * i + 1], GRD[i]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, refBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pts), gl.DYNAMIC_DRAW);
+    refCount = pts.length / 3;
+  }
+
   function setNbrOverlay(queryIdx, nbrIdx) {
     const pts = [];
     for (const j of nbrIdx) pts.push(POS[2 * j], POS[2 * j + 1], 0.0);
@@ -192,7 +210,18 @@
     gl.uniform1f(uShowB, showGrade[2] ? 1.0 : 0.0);
     gl.uniform1f(uShowC, showGrade[1] ? 1.0 : 0.0);
     if (!hideBg) { gl.uniform1f(uPass, 0.0); gl.drawArrays(gl.POINTS, 0, N); }
-    if (anyGraded()) { gl.uniform1f(uPass, 1.0); gl.drawArrays(gl.POINTS, 0, N); }
+    if (anyGraded()) {
+      gl.uniform1f(uPass, 1.0);
+      if (selectedRef && REF_OK) {
+        // draw only the matching graded points (per-grade still gated by uShow* in the shader)
+        gl.bindBuffer(gl.ARRAY_BUFFER, refBuf);
+        gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 12, 0);
+        gl.enableVertexAttribArray(aGrade); gl.vertexAttribPointer(aGrade, 1, gl.FLOAT, false, 12, 8);
+        if (refCount > 0) gl.drawArrays(gl.POINTS, 0, refCount);
+      } else {
+        gl.drawArrays(gl.POINTS, 0, N);     // main buf still bound
+      }
+    }
     gl.useProgram(ovProg);
     gl.uniform2f(ovCenter, view.cx, view.cy);
     gl.uniform1f(ovScale, view.scale);
@@ -233,6 +262,7 @@
     if (anyGraded()) {
       for (const i of gradedIdx) {
         if (!showGrade[GRD[i]]) continue;
+        if (!refPass(i)) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -246,6 +276,7 @@
       const arr = cells.get(cellKey(ccx + dx, ccy + dy)); if (!arr) continue;
       for (const i of arr) {
         if (!gradeVisible(GRD[i])) continue;
+        if (GRD[i] > 0 && !refPass(i)) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -264,13 +295,16 @@
     sheetCache.set(s, img);
     return img;
   }
-  function cropInto(ctx, i, dw, dh) {
+  function cropInto(ctx, i, dw, dh, smooth) {
     const s = Math.floor(i / PER_SHEET), within = i % PER_SHEET;
     const col = within % PER_ROW, row = Math.floor(within / PER_ROW);
     const px = col * THUMB, py = row * THUMB;
     const img = loadSheet(s);
     const drawCrop = () => {
-      ctx.imageSmoothingEnabled = false;
+      // 64px source tiles upscale poorly with nearest-neighbour; smooth the big
+      // panel cutout so it doesn't look blocky. Map points / small cards stay crisp.
+      ctx.imageSmoothingEnabled = !!smooth;
+      if (smooth) ctx.imageSmoothingQuality = "high";
       ctx.clearRect(0, 0, dw, dh);
       ctx.drawImage(img, px, py, THUMB, THUMB, 0, 0, dw, dh);
     };
@@ -345,7 +379,7 @@
   }
   function showPanel(i) {
     sel = i;
-    cropInto(pctx, i, pcv.width, pcv.height);
+    cropInto(pctx, i, pcv.width, pcv.height, true);
     pcv.style.borderColor = GRADE_HEX[GRD[i]] || "transparent";
     document.getElementById("panelId").textContent = IDLIST[i];
     document.getElementById("panelGrade").textContent = GRADE_NAME[String(GRD[i])];
@@ -402,59 +436,109 @@
   }
 
   // ---- nearest neighbors: computed live from quantized (int8) features ----
+  // The search is ~120M int8 multiply-adds over the full table. Run synchronously
+  // on the main thread it freezes the tab for many seconds and looks dead, so it
+  // runs in a Web Worker (built inline from a Blob — no extra file to ship).
   const FEAT_OK = (typeof FEAT_META !== "undefined") && FEAT_META;
   const NN_MAX = 500;                  // UI cap so the popup doesn't render endless cards
-  let FEAT = null, featLoading = null;
-  async function ensureFeats() {
-    if (FEAT) return;
-    if (featLoading) return featLoading;
-    featLoading = (async () => {
-      const { dims, n, chunks } = FEAT_META;
-      const buf = new Int8Array(n * dims);
-      let off = 0;
-      for (let c = 0; c < chunks; c++) {
-        nnMsg.textContent = `loading features… (${c + 1}/${chunks})`;
-        const resp = await fetch("feat_" + c + ".bin");
-        const ab = await resp.arrayBuffer();
-        buf.set(new Int8Array(ab), off);
-        off += ab.byteLength;
-      }
-      FEAT = buf;
-    })();
-    return featLoading;
-  }
-  function computeNN(i, topN) {
-    const D = FEAT_META.dims, n = FEAT_META.n, qi = i * D;
-    const q = new Int32Array(D);
-    for (let d = 0; d < D; d++) q[d] = FEAT[qi + d];
-    const best = [];                   // ascending by sim, length <= topN
-    let worst = -Infinity;
-    for (let r = 0; r < n; r++) {
-      if (r === i) continue;
-      let s = 0; const ro = r * D;
-      for (let d = 0; d < D; d++) s += q[d] * FEAT[ro + d];
-      if (best.length < topN || s > worst) {
-        let lo = 0, hi = best.length;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (best[m].s < s) lo = m + 1; else hi = m; }
-        best.splice(lo, 0, { s: s, r: r });
-        if (best.length > topN) best.shift();
-        worst = best[0].s;
-      }
+  const NN_WORKER_SRC = `
+    let FEAT = null, META = null, loading = null;
+    async function ensureFeats(meta, urls) {
+      if (FEAT) return;
+      if (loading) return loading;
+      loading = (async () => {
+        META = meta;
+        const buf = new Int8Array(meta.n * meta.dims);
+        let off = 0;
+        for (let c = 0; c < urls.length; c++) {
+          postMessage({ type: "progress", msg: "loading features\\u2026 (" + (c + 1) + "/" + urls.length + ")" });
+          const resp = await fetch(urls[c]);
+          if (!resp.ok) throw new Error("fetch " + urls[c] + " -> HTTP " + resp.status);
+          const ab = await resp.arrayBuffer();
+          buf.set(new Int8Array(ab), off);
+          off += ab.byteLength;
+        }
+        FEAT = buf;
+      })();
+      return loading;
     }
-    return best.reverse().map((b) => b.r);   // descending similarity
+    function computeNN(i, topN) {
+      const D = META.dims, n = META.n, qi = i * D;
+      const q = new Int32Array(D);
+      for (let d = 0; d < D; d++) q[d] = FEAT[qi + d];
+      const best = []; let worst = -Infinity;       // ascending by sim, length <= topN
+      for (let r = 0; r < n; r++) {
+        if (r === i) continue;
+        let s = 0; const ro = r * D;
+        for (let d = 0; d < D; d++) s += q[d] * FEAT[ro + d];
+        if (best.length < topN || s > worst) {
+          let lo = 0, hi = best.length;
+          while (lo < hi) { const m = (lo + hi) >> 1; if (best[m].s < s) lo = m + 1; else hi = m; }
+          best.splice(lo, 0, { s: s, r: r });
+          if (best.length > topN) best.shift();
+          worst = best[0].s;
+        }
+      }
+      return best.reverse().map((b) => b.r);        // descending similarity
+    }
+    onmessage = async (e) => {
+      const { meta, urls, i, topN, reqId } = e.data;
+      try {
+        await ensureFeats(meta, urls);
+        postMessage({ type: "progress", msg: "computing neighbors\\u2026" });
+        const nbr = computeNN(i, topN);
+        postMessage({ type: "result", reqId, nbr });
+      } catch (err) {
+        postMessage({ type: "error", reqId, msg: String((err && err.message) || err) });
+      }
+    };
+  `;
+  let nnWorker = null, nnReqId = 0;
+  const nnPending = new Map();
+  function ensureWorker() {
+    if (nnWorker) return nnWorker;
+    const blob = new Blob([NN_WORKER_SRC], { type: "application/javascript" });
+    nnWorker = new Worker(URL.createObjectURL(blob));
+    nnWorker.onmessage = (e) => {
+      const d = e.data;
+      if (d.type === "progress") { nnMsg.textContent = d.msg; return; }
+      const p = nnPending.get(d.reqId);
+      if (!p) return;
+      nnPending.delete(d.reqId);
+      if (d.type === "result") p.resolve(d.nbr); else p.reject(new Error(d.msg));
+    };
+    nnWorker.onerror = (e) => {
+      for (const [, p] of nnPending) p.reject(new Error(e.message || "worker error"));
+      nnPending.clear();
+    };
+    return nnWorker;
+  }
+  function workerNN(i, topN) {
+    const w = ensureWorker();
+    const reqId = ++nnReqId;
+    const meta = { dims: FEAT_META.dims, n: FEAT_META.n };
+    const urls = [];
+    for (let c = 0; c < FEAT_META.chunks; c++) urls.push(new URL("feat_" + c + ".bin", location.href).href);
+    return new Promise((resolve, reject) => {
+      nnPending.set(reqId, { resolve, reject });
+      w.postMessage({ meta, urls, i, topN, reqId });
+    });
   }
   async function showNeighbors(i, nWanted) {
     if (!FEAT_OK) { nnMsg.textContent = "neighbor features not available on this build."; return; }
     nnMsg.textContent = "loading features…";
     try {
-      await ensureFeats();
-      nnMsg.textContent = "computing neighbors…";
-      await new Promise((r) => setTimeout(r, 15));   // let the message paint
-      const nbr = computeNN(i, nWanted);
+      const nbr = await workerNN(i, nWanted);
       setNbrOverlay(i, nbr);
       nnMsg.textContent = nbr.length + " neighbors (magenta on map) — opened in popup";
       openModal(nbr.length + " nearest neighbors of " + IDLIST[i], nbr);
-    } catch (e) { nnMsg.textContent = "Neighbor compute failed (needs the hosted site)."; }
+    } catch (e) {
+      console.error("NN failed:", e);
+      const local = location.protocol === "file:";
+      nnMsg.textContent = local
+        ? "Neighbor compute needs a server (open via the live site or run a local server, not file://)."
+        : "Neighbor compute failed: " + ((e && e.message) || e);
+    }
   }
   document.getElementById("nnBtn").addEventListener("click", () => {
     if (sel < 0) return;
@@ -554,6 +638,25 @@
   document.getElementById("showB").addEventListener("change", (e) => { showGrade[2] = e.target.checked; draw(); });
   document.getElementById("showC").addEventListener("change", (e) => { showGrade[1] = e.target.checked; draw(); });
   document.getElementById("bgOpacity").addEventListener("input", (e) => { bgAlpha = parseFloat(e.target.value); draw(); });
+  (function initRefDropdown() {
+    const sel = document.getElementById("refSel");
+    if (!sel) return;
+    if (typeof REF_LIST === "undefined" || !REF_LIST || !REF_LIST.length) {
+      const row = document.getElementById("refRow"); if (row) row.style.display = "none";
+      return;   // build shipped without refs.js
+    }
+    for (const entry of REF_LIST) {
+      const tok = entry[0], cnt = entry[1];
+      const o = document.createElement("option");
+      o.value = tok; o.textContent = tok + " (" + cnt + ")";
+      sel.appendChild(o);
+    }
+    sel.addEventListener("change", (e) => {
+      selectedRef = e.target.value || "";
+      rebuildRefFilter();
+      draw();
+    });
+  })();
   document.getElementById("resetView").addEventListener("click", () => { fitView(); nbrCount = 0; draw(); });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
   window.addEventListener("resize", () => { resize(); draw(); });
