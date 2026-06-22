@@ -153,19 +153,36 @@
   const nbrBuf = gl.createBuffer(); let nbrCount = 0;
   const flagBuf = gl.createBuffer(); let flagCount = 0;
 
-  // ---- reference-paper filter (graded objects only; data from refs.js) ----
+  // ---- paper + scale filters (graded objects only; data from refs.js) ----
+  // Empty set = no filter (show all). Papers are OR-combined; scale is OR-combined;
+  // the two filters are AND-combined. Untagged scale defaults to "galaxy".
   const REF_OK = (typeof REF_MAP !== "undefined") && REF_MAP;
-  let selectedRef = "";                 // "" = all papers
+  const SCALE_OK = (typeof SCALE_MAP !== "undefined") && SCALE_MAP;
+  const selectedRefs = new Set();       // selected paper tokens
+  const selectedScales = new Set();     // selected scales: galaxy|group|cluster
   const refBuf = gl.createBuffer(); let refCount = 0;   // matching graded points [x,y,grade]
-  function refPass(i) {
-    if (!selectedRef) return true;
+  function paperPass(i) {
+    if (!selectedRefs.size) return true;
     const r = REF_OK ? REF_MAP[IDLIST[i]] : null;       // "Walmsley+25|Rojas+25"
-    return !!r && ("|" + r + "|").indexOf("|" + selectedRef + "|") >= 0;
+    if (!r) return false;
+    const padded = "|" + r + "|";
+    for (const t of selectedRefs) if (padded.indexOf("|" + t + "|") >= 0) return true;
+    return false;
   }
+  function scaleOf(i) {
+    const s = SCALE_OK ? SCALE_MAP[IDLIST[i]] : null;    // only non-galaxy ids are stored
+    return s || "galaxy";
+  }
+  function scalePass(i) {
+    if (!selectedScales.size) return true;
+    return selectedScales.has(scaleOf(i));
+  }
+  function filterPass(i) { return paperPass(i) && scalePass(i); }
+  function filterActive() { return selectedRefs.size > 0 || selectedScales.size > 0; }
   function rebuildRefFilter() {
-    if (!selectedRef) { refCount = 0; return; }
+    if (!filterActive()) { refCount = 0; return; }
     const pts = [];
-    for (const i of gradedIdx) if (refPass(i)) pts.push(POS[2 * i], POS[2 * i + 1], GRD[i]);
+    for (const i of gradedIdx) if (filterPass(i)) pts.push(POS[2 * i], POS[2 * i + 1], GRD[i]);
     gl.bindBuffer(gl.ARRAY_BUFFER, refBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pts), gl.DYNAMIC_DRAW);
     refCount = pts.length / 3;
@@ -212,7 +229,7 @@
     if (!hideBg) { gl.uniform1f(uPass, 0.0); gl.drawArrays(gl.POINTS, 0, N); }
     if (anyGraded()) {
       gl.uniform1f(uPass, 1.0);
-      if (selectedRef && REF_OK) {
+      if (filterActive()) {
         // draw only the matching graded points (per-grade still gated by uShow* in the shader)
         gl.bindBuffer(gl.ARRAY_BUFFER, refBuf);
         gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 12, 0);
@@ -262,7 +279,7 @@
     if (anyGraded()) {
       for (const i of gradedIdx) {
         if (!showGrade[GRD[i]]) continue;
-        if (!refPass(i)) continue;
+        if (!filterPass(i)) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -276,7 +293,7 @@
       const arr = cells.get(cellKey(ccx + dx, ccy + dy)); if (!arr) continue;
       for (const i of arr) {
         if (!gradeVisible(GRD[i])) continue;
-        if (GRD[i] > 0 && !refPass(i)) continue;
+        if (GRD[i] > 0 && !filterPass(i)) continue;
         const [px, py] = worldToScreen(POS[2 * i], POS[2 * i + 1]);
         const d = Math.hypot(px - sx, py - sy);
         if (d < bestD) { bestD = d; best = i; }
@@ -638,24 +655,60 @@
   document.getElementById("showB").addEventListener("change", (e) => { showGrade[2] = e.target.checked; draw(); });
   document.getElementById("showC").addEventListener("change", (e) => { showGrade[1] = e.target.checked; draw(); });
   document.getElementById("bgOpacity").addEventListener("input", (e) => { bgAlpha = parseFloat(e.target.value); draw(); });
-  (function initRefDropdown() {
-    const sel = document.getElementById("refSel");
-    if (!sel) return;
-    if (typeof REF_LIST === "undefined" || !REF_LIST || !REF_LIST.length) {
-      const row = document.getElementById("refRow"); if (row) row.style.display = "none";
-      return;   // build shipped without refs.js
-    }
-    for (const entry of REF_LIST) {
-      const tok = entry[0], cnt = entry[1];
-      const o = document.createElement("option");
-      o.value = tok; o.textContent = tok + " (" + cnt + ")";
-      sel.appendChild(o);
-    }
-    sel.addEventListener("change", (e) => {
-      selectedRef = e.target.value || "";
-      rebuildRefFilter();
-      draw();
+  // multi-select checkbox dropdown: empty selection = all. Calls onChange after edits.
+  function makeMultiDropdown(rootId, noun, items, selSet, onChange) {
+    const root = document.getElementById(rootId);
+    if (!root) return;
+    const btn = document.createElement("button"); btn.type = "button";
+    const panel = document.createElement("div"); panel.className = "panel";
+    root.append(btn, panel);
+    const updateBtn = () => {
+      btn.textContent = selSet.size === 0 ? ("All " + noun)
+        : selSet.size === 1 ? Array.from(selSet)[0]
+        : (selSet.size + " " + noun);
+    };
+    const allRow = document.createElement("label"); allRow.className = "allrow";
+    allRow.textContent = "All " + noun;
+    const allCb = document.createElement("input"); allCb.type = "checkbox"; allCb.checked = true;
+    allRow.prepend(allCb);
+    allRow.addEventListener("click", (e) => {
+      e.stopPropagation();
+      selSet.clear();
+      panel.querySelectorAll("input.opt").forEach((c) => { c.checked = false; });
+      allCb.checked = true; updateBtn(); onChange();
     });
+    panel.appendChild(allRow);
+    for (const entry of items) {
+      const val = entry[0], cnt = entry[1];
+      const lab = document.createElement("label");
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.className = "opt"; cb.value = val;
+      cb.addEventListener("change", () => {
+        if (cb.checked) selSet.add(val); else selSet.delete(val);
+        allCb.checked = selSet.size === 0;
+        updateBtn(); onChange();
+      });
+      lab.append(cb, document.createTextNode(" " + val + " (" + cnt + ")"));
+      panel.appendChild(lab);
+    }
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.querySelectorAll(".msdd .panel.open").forEach((p) => { if (p !== panel) p.classList.remove("open"); });
+      panel.classList.toggle("open");
+    });
+    panel.addEventListener("click", (e) => e.stopPropagation());
+    updateBtn();
+  }
+  document.addEventListener("click", () => {
+    document.querySelectorAll(".msdd .panel.open").forEach((p) => p.classList.remove("open"));
+  });
+  (function initFilters() {
+    const onChange = () => { rebuildRefFilter(); draw(); };
+    if (typeof REF_LIST !== "undefined" && REF_LIST && REF_LIST.length) {
+      makeMultiDropdown("refDD", "papers", REF_LIST, selectedRefs, onChange);
+    } else { const r = document.getElementById("refRow"); if (r) r.style.display = "none"; }
+    if (typeof SCALE_LIST !== "undefined" && SCALE_LIST && SCALE_LIST.length > 1) {
+      makeMultiDropdown("scaleDD", "scales", SCALE_LIST, selectedScales, onChange);
+    } else { const r = document.getElementById("scaleRow"); if (r) r.style.display = "none"; }
   })();
   document.getElementById("resetView").addEventListener("click", () => { fitView(); nbrCount = 0; draw(); });
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });

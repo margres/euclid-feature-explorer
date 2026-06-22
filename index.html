@@ -32,6 +32,16 @@
   .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #888; }
   .ring { width: 12px; height: 12px; border-radius: 50%; display: inline-block; box-sizing: border-box; border: 3px solid; background: transparent; }
   #controls label, #controls button, #controls input { font-size: 13px; }
+  .msdd { position: relative; display: inline-block; vertical-align: middle; }
+  .msdd > button { font-size: 12px; padding: 2px 8px; cursor: pointer; border: 1px solid #bbb;
+                   border-radius: 4px; background: #fff; min-width: 130px; text-align: left; }
+  .msdd > button::after { content: " \25BE"; color: #888; float: right; }
+  .msdd .panel { position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 2px; background: #fff;
+                 border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+                 padding: 6px 8px; max-height: 260px; overflow-y: auto; white-space: nowrap; display: none; }
+  .msdd .panel.open { display: block; }
+  .msdd .panel label { display: block; font-size: 12px; padding: 2px 0; cursor: pointer; }
+  .msdd .panel .allrow { border-bottom: 1px solid #eee; margin-bottom: 4px; padding-bottom: 4px; color: #555; }
   #controls .ctl { margin-top: 6px; }
   #bgOpacity { width: 100%; }
   #searchRow { margin-top: 8px; display: flex; gap: 4px; }
@@ -68,7 +78,10 @@
       <label><input type="checkbox" id="showC" checked /> C</label>
     </div>
     <div class="ctl" id="refRow">Reference paper:
-      <select id="refSel"><option value="">All papers</option></select>
+      <div class="msdd" id="refDD"></div>
+    </div>
+    <div class="ctl" id="scaleRow">Lens scale:
+      <div class="msdd" id="scaleDD"></div>
     </div>
     <div class="ctl">Background opacity
       <input type="range" id="bgOpacity" min="0.03" max="1" step="0.01" value="0.45" />
