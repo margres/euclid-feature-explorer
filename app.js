@@ -214,6 +214,7 @@
   }
   function draw() {
     gl.clear(gl.COLOR_BUFFER_BIT);
+    if (imageActive()) { drawImages(); drawMarkersOnly(); return; }
     gl.useProgram(prog);
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 12, 0);
@@ -239,6 +240,9 @@
         gl.drawArrays(gl.POINTS, 0, N);     // main buf still bound
       }
     }
+    drawMarkersOnly();
+  }
+  function drawMarkersOnly() {
     gl.useProgram(ovProg);
     gl.uniform2f(ovCenter, view.cx, view.cy);
     gl.uniform1f(ovScale, view.scale);
@@ -326,6 +330,130 @@
       ctx.drawImage(img, px, py, THUMB, THUMB, 0, 0, dw, dh);
     };
     if (img.complete && img.naturalWidth) drawCrop(); else img.onload = drawCrop;
+  }
+
+  // ---- image mode: textured cutout tiles instead of points (viewport-culled LOD) ----
+  // We cannot hold all ~266 sprite sheets as GPU textures (4096²×266 ≈ 18 GB), so images
+  // are drawn only for objects in view, only when zoomed in enough that a tile is visible,
+  // and only a few sheets are kept on the GPU at once (LRU). Zoomed out, we fall back to points.
+  const SHEET_PX = MANIFEST.sheet;          // 4096
+  const IMG_MIN_PX = 9;                      // min on-screen tile size (CSS px) to show images
+  const IMG_MAX_TILES = 45000;               // safety cap on tiles drawn per frame
+  const IMG_TEX_CAP = 8;                     // max sheets resident on the GPU (~50 MB each)
+  // tile world size ≈ average point spacing, so tiles roughly pave the plane when zoomed in
+  const IMG_TILE_WORLD = 1.3 * Math.max((xmax - xmin), (ymax - ymin)) / Math.sqrt(N || 1);
+  const MAX_TEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const IMG_SUPPORTED = MAX_TEX >= SHEET_PX;
+  let imageMode = false;
+
+  const IVS = `
+    attribute vec2 aPos; attribute vec2 aUv;
+    uniform vec2 uCenter; uniform float uScale; uniform vec2 uHalf;
+    varying vec2 vUv;
+    void main() {
+      vUv = aUv;
+      vec2 p = (aPos - uCenter) * uScale / uHalf;
+      gl_Position = vec4(p, 0.0, 1.0);
+    }`;
+  const IFS = `
+    precision mediump float;
+    varying vec2 vUv; uniform sampler2D uTex;
+    void main() { gl_FragColor = texture2D(uTex, vUv); }`;
+  const imgProg = link(IVS, IFS);
+  const iaPos = gl.getAttribLocation(imgProg, "aPos");
+  const iaUv = gl.getAttribLocation(imgProg, "aUv");
+  const iuCenter = gl.getUniformLocation(imgProg, "uCenter");
+  const iuScale = gl.getUniformLocation(imgProg, "uScale");
+  const iuHalf = gl.getUniformLocation(imgProg, "uHalf");
+  const iuTex = gl.getUniformLocation(imgProg, "uTex");
+  const imgVbo = gl.createBuffer();
+
+  const glTex = new Map();   // sheet idx -> { tex, used }
+  let texClock = 0;
+  function getSheetTex(s) {
+    const e = glTex.get(s);
+    if (e) { e.used = ++texClock; return e.tex; }
+    const img = loadSheet(s);
+    if (!(img.complete && img.naturalWidth)) {
+      if (!img.__imgHook) { img.__imgHook = true; img.addEventListener("load", () => { if (imageMode) draw(); }); }
+      return null;                                   // redraw once the sheet finishes loading
+    }
+    if (glTex.size >= IMG_TEX_CAP) {                 // evict least-recently-used sheet
+      let oldest = null, ok = Infinity;
+      for (const [k, v] of glTex) if (v.used < ok) { ok = v.used; oldest = k; }
+      if (oldest !== null) { gl.deleteTexture(glTex.get(oldest).tex); glTex.delete(oldest); }
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    glTex.set(s, { tex: tex, used: ++texClock });
+    return tex;
+  }
+
+  function imgTileScreenPx() { return IMG_TILE_WORLD * (view.scale / dpr()); }
+  function imageActive() { return imageMode && IMG_SUPPORTED && imgTileScreenPx() >= IMG_MIN_PX; }
+
+  function drawImages() {
+    const [ax, ay] = screenToWorld(0, 0);
+    const [bx, by] = screenToWorld(window.innerWidth, window.innerHeight);
+    const m = IMG_TILE_WORLD;
+    const minX = Math.min(ax, bx) - m, maxX = Math.max(ax, bx) + m;
+    const minY = Math.min(ay, by) - m, maxY = Math.max(ay, by) + m;
+    const cx0 = Math.max(0, Math.floor((minX - xmin) / cellW));
+    const cx1 = Math.min(GRID - 1, Math.floor((maxX - xmin) / cellW));
+    const cy0 = Math.max(0, Math.floor((minY - ymin) / cellH));
+    const cy1 = Math.min(GRID - 1, Math.floor((maxY - ymin) / cellH));
+    const bySheet = new Map();
+    let total = 0;
+    outer:
+    for (let cx = cx0; cx <= cx1; cx++) for (let cy = cy0; cy <= cy1; cy++) {
+      const arr = cells.get(cellKey(cx, cy)); if (!arr) continue;
+      for (const i of arr) {
+        const x = POS[2 * i], y = POS[2 * i + 1];
+        if (x < minX || x > maxX || y < minY || y > maxY) continue;
+        const s = Math.floor(i / PER_SHEET);
+        let b = bySheet.get(s); if (!b) { b = []; bySheet.set(s, b); }
+        b.push(i);
+        if (++total >= IMG_MAX_TILES) break outer;
+      }
+    }
+    const h = IMG_TILE_WORLD / 2, inv = 1 / SHEET_PX;
+    gl.useProgram(imgProg);
+    gl.uniform2f(iuCenter, view.cx, view.cy);
+    gl.uniform1f(iuScale, view.scale);
+    gl.uniform2f(iuHalf, canvas.width / 2, canvas.height / 2);
+    gl.uniform1i(iuTex, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, imgVbo);
+    gl.enableVertexAttribArray(iaPos); gl.vertexAttribPointer(iaPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(iaUv); gl.vertexAttribPointer(iaUv, 2, gl.FLOAT, false, 16, 8);
+    for (const [s, idxs] of bySheet) {
+      const tex = getSheetTex(s); if (!tex) continue;          // sheet still downloading
+      const verts = new Float32Array(idxs.length * 24);        // 6 verts × (pos2 + uv2)
+      let o = 0;
+      for (const i of idxs) {
+        const within = i % PER_SHEET;
+        const col = within % PER_ROW, row = Math.floor(within / PER_ROW);
+        const u0 = col * THUMB * inv, u1 = (col * THUMB + THUMB) * inv;
+        const t0 = row * THUMB * inv, t1 = (row * THUMB + THUMB) * inv;   // t0 = top of tile (no Y-flip)
+        const x = POS[2 * i], y = POS[2 * i + 1];
+        const xl = x - h, xr = x + h, yt = y + h, yb = y - h;
+        verts[o++] = xl; verts[o++] = yt; verts[o++] = u0; verts[o++] = t0;   // TL
+        verts[o++] = xl; verts[o++] = yb; verts[o++] = u0; verts[o++] = t1;   // BL
+        verts[o++] = xr; verts[o++] = yb; verts[o++] = u1; verts[o++] = t1;   // BR
+        verts[o++] = xl; verts[o++] = yt; verts[o++] = u0; verts[o++] = t0;   // TL
+        verts[o++] = xr; verts[o++] = yb; verts[o++] = u1; verts[o++] = t1;   // BR
+        verts[o++] = xr; verts[o++] = yt; verts[o++] = u1; verts[o++] = t0;   // TR
+      }
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, idxs.length * 6);
+    }
   }
 
   // ---- flags + notes ----
@@ -651,6 +779,17 @@
   }, { passive: false });
 
   document.getElementById("hideBg").addEventListener("change", (e) => { hideBg = e.target.checked; draw(); });
+  document.getElementById("imgMode").addEventListener("change", (e) => {
+    if (e.target.checked && !IMG_SUPPORTED) {
+      e.target.checked = false;
+      searchMsg.textContent = "Image mode needs GPU max texture ≥ " + SHEET_PX + " (this device: " + MAX_TEX + ").";
+      return;
+    }
+    imageMode = e.target.checked;
+    if (imageMode && !imageActive()) searchMsg.textContent = "Zoom in to see the cutout images.";
+    else if (!imageMode) searchMsg.textContent = "";
+    draw();
+  });
   document.getElementById("showA").addEventListener("change", (e) => { showGrade[3] = e.target.checked; draw(); });
   document.getElementById("showB").addEventListener("change", (e) => { showGrade[2] = e.target.checked; draw(); });
   document.getElementById("showC").addEventListener("change", (e) => { showGrade[1] = e.target.checked; draw(); });
